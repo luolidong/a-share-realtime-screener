@@ -1,85 +1,122 @@
 # A股实时条件选股器
 
-根据实时行情、资金流和最新财务数据自动筛选符合条件的 A 股股票。
+前后端分离的 A 股实时条件筛选项目。
 
-## 当前默认规则
+- 后端：FastAPI + AkShare
+- 前端：React + Vite
+- 当前目标：根据盘中行情、主力资金流和最新财务增长数据筛选股票
 
-- 换手率：10% ~ 30%
-- 实时/当日主力资金净流入：> 1 亿元
-- 归母净利润同比增长率：>= 30%
-- 营业总收入同比增长率：>= 30%
+## 当前默认筛选规则
 
-所有阈值都可以在 `config.yaml` 中修改。
+四个条件同时满足：
 
-## 数据源
+1. 换手率：10% ~ 30%
+2. 当日主力资金净流入：> 1 亿元
+3. 归母净利润同比增长率：>= 30%
+4. 营业总收入同比增长率：>= 30%
 
-第一版使用 AkShare 聚合公开数据：
-
-- A 股实时行情：用于价格、涨跌幅、换手率
-- 个股资金流排行：用于主力净流入
-- 东方财富业绩报表：用于归母净利润同比、营业总收入同比
-
-> 注意：公开免费数据通常属于准实时数据，延迟和可用性由上游数据源决定。如果后续需要交易级低延迟数据，可新增付费数据 Provider，不需要修改筛选引擎。
-
-## 安装
-
-```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
-pip install -r requirements.txt
-```
-
-## 运行 Web 看板
-
-```bash
-streamlit run app.py
-```
-
-打开终端显示的本地地址即可使用。
-
-## 命令行扫描
-
-```bash
-python -m src.cli
-```
-
-## 配置
-
-`config.yaml`：
-
-```yaml
-rules:
-  turnover_min: 10
-  turnover_max: 30
-  net_inflow_min_cny: 100000000
-  net_profit_yoy_min: 30
-  revenue_yoy_min: 30
-```
+筛选阈值统一配置在 `backend/config.yaml`。
 
 ## 项目结构
 
 ```text
 .
-├── app.py
-├── config.yaml
-├── requirements.txt
-├── src/
-│   ├── cli.py
-│   ├── config.py
-│   ├── models.py
-│   ├── screener.py
-│   └── providers/
-│       ├── base.py
-│       └── akshare_provider.py
-└── tests/
-    └── test_screener.py
+├── backend/
+│   ├── app/
+│   │   ├── main.py
+│   │   ├── config.py
+│   │   ├── models.py
+│   │   ├── screener.py
+│   │   └── providers/
+│   │       ├── base.py
+│   │       └── akshare_provider.py
+│   ├── tests/
+│   │   └── test_screener.py
+│   ├── config.yaml
+│   └── requirements.txt
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx
+│   │   ├── main.jsx
+│   │   └── styles.css
+│   ├── index.html
+│   └── package.json
+└── .gitignore
 ```
+
+## 后端启动
+
+```bash
+cd backend
+python -m venv .venv
+source .venv/bin/activate
+# Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+接口：
+
+- `GET /api/health`：健康检查
+- `GET /api/rules`：当前筛选规则
+- `GET /api/stocks?limit=100`：返回符合全部条件的股票
+- `GET /docs`：FastAPI Swagger 文档
+
+## 前端启动
+
+另开一个终端：
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+浏览器打开：
+
+```text
+http://127.0.0.1:5173
+```
+
+前端默认访问：
+
+```text
+http://127.0.0.1:8000
+```
+
+如需修改后端地址，可设置：
+
+```bash
+VITE_API_BASE=http://127.0.0.1:8000 npm run dev
+```
+
+## 数据来源
+
+第一版使用 AkShare 聚合的东方财富公开数据：
+
+- `stock_zh_a_spot_em`：A 股实时/准实时行情、换手率
+- `stock_individual_fund_flow_rank(indicator="今日")`：当日主力资金净流入
+- `stock_yjbb_em`：最新季报/年报的净利润同比和营业总收入同比
+
+免费公开数据的实际刷新延迟和稳定性取决于上游接口，因此当前架构将数据源封装在 `providers/` 中。后续如果接入付费实时源，只需新增 Provider，不需要重写筛选逻辑和前端。
+
+## 测试
+
+```bash
+cd backend
+pytest -q
+```
+
+目前测试覆盖四个条件必须同时满足的 AND 筛选逻辑。
 
 ## 下一阶段
 
-- 缓存财报数据，避免每次盘中刷新重复下载
-- 定时自动刷新和扫描历史记录
-- 增加行业、概念、市值、量比、涨停等条件
-- 支持自选规则组合与保存
-- 增加数据源健康检查和备用 Provider
-- 支持 Telegram/邮件/微信等命中提醒
+- 财报数据缓存，避免盘中反复请求
+- Redis/本地缓存与数据更新时间展示
+- 自动定时扫描和历史命中记录
+- 前端可编辑筛选条件
+- 市值、量比、行业、概念、涨停次数等扩展规则
+- WebSocket/SSE 推送新命中股票
+- 多数据源容错与付费实时行情 Provider
+- Docker Compose 一键启动前后端
+- GitHub Actions 自动测试与前端构建
