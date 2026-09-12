@@ -4,6 +4,10 @@ services:
     restart: unless-stopped
     expose:
       - "8000"
+    environment:
+      SCREENER_DB_PATH: /data/screener.db
+    volumes:
+      - screener_data:/data
 
   frontend:
     build:
@@ -15,3 +19,6 @@ services:
       - backend
     ports:
       - "8080:80"
+
+volumes:
+  screener_data:
