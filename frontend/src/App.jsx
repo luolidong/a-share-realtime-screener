@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8000'
+const REALTIME_REFRESH_MS = 15000
 
 function money(value) {
   if (value == null) return '-'
@@ -21,7 +22,7 @@ export default function App() {
   const [updatedAt, setUpdatedAt] = useState(null)
 
   async function loadDefaults() {
-    const rulesRes = await fetch(`${API_BASE}/api/rules`)
+    const rulesRes = await fetch(`${API_BASE}/api/rules`, { cache: 'no-store' })
     if (!rulesRes.ok) throw new Error('获取筛选规则失败')
     const data = await rulesRes.json()
     setRules(data)
@@ -42,8 +43,9 @@ export default function App() {
         net_inflow_min_cny: currentRules.net_inflow_min_cny,
         net_profit_yoy_min: currentRules.net_profit_yoy_min,
         revenue_yoy_min: currentRules.revenue_yoy_min,
+        _: Date.now().toString(),
       })
-      const stocksRes = await fetch(`${API_BASE}/api/stocks?${params}`)
+      const stocksRes = await fetch(`${API_BASE}/api/stocks?${params}`, { cache: 'no-store' })
       if (!stocksRes.ok) throw new Error((await stocksRes.json()).detail || '获取股票数据失败')
       setStocks(await stocksRes.json())
       setUpdatedAt(new Date())
@@ -63,7 +65,7 @@ export default function App() {
 
   useEffect(() => {
     if (!form) return
-    const timer = setInterval(() => refresh(form), 60000)
+    const timer = setInterval(() => refresh(form), REALTIME_REFRESH_MS)
     return () => clearInterval(timer)
   }, [form])
 
@@ -109,8 +111,8 @@ export default function App() {
 
       <section className="summary">
         <div><span>符合股票</span><strong>{stocks.length}</strong></div>
-        <div><span>刷新频率</span><strong>60 秒</strong></div>
-        <div><span>最后更新</span><strong>{updatedAt ? updatedAt.toLocaleTimeString() : '-'}</strong></div>
+        <div><span>盘中刷新频率</span><strong>15 秒</strong></div>
+        <div><span>最后实时刷新</span><strong>{updatedAt ? updatedAt.toLocaleTimeString() : '-'}</strong></div>
       </section>
 
       {error && <div className="error">{error}</div>}
