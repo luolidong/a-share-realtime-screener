@@ -71,7 +71,8 @@ a-share-realtime-screener/
 │   └── Dockerfile
 ├── frontend/                        # Web 页面
 ├── docs/
-│   ├── DEPLOYMENT.md                # 部署与故障排查
+│   ├── DEPLOYMENT.md                # 通用部署与故障排查
+│   ├── WINDOWS_DEPLOYMENT.md        # Windows 部署指南
 │   └── DEVELOPMENT.md               # 从 0 开发教程
 ├── docker-compose.yml
 └── README.md
@@ -97,7 +98,7 @@ curl http://127.0.0.1:8080/api/health
 curl http://127.0.0.1:8080/api/stocks
 ```
 
-完整部署步骤见 `docs/DEPLOYMENT.md`；如果要理解“没有 AI 时如何从 0 自己开发”，见 `docs/DEVELOPMENT.md`。
+通用部署步骤见 `docs/DEPLOYMENT.md`；Windows 10/11 用户见 `docs/WINDOWS_DEPLOYMENT.md`；如果要理解“没有 AI 时如何从 0 自己开发”，见 `docs/DEVELOPMENT.md`。
 
 ## 核心功能
 
