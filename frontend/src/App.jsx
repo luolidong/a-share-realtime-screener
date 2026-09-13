@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8000'
-const REALTIME_REFRESH_MS = 15000
 
 function money(value) {
   if (value == null) return '-'
@@ -61,17 +60,12 @@ export default function App() {
   }
 
   useEffect(() => {
-    loadDefaults().then((defaults) => refresh(defaults)).catch((e) => {
+    loadDefaults().catch((e) => {
       setError(e.message || String(e))
+    }).finally(() => {
       setLoading(false)
     })
   }, [])
-
-  useEffect(() => {
-    if (!form) return
-    const timer = setInterval(() => refresh(form), REALTIME_REFRESH_MS)
-    return () => clearInterval(timer)
-  }, [form])
 
   const ruleText = useMemo(() => {
     if (!form) return []
@@ -91,11 +85,11 @@ export default function App() {
     <main className="page">
       <header className="hero">
         <div>
-          <p className="eyebrow">A-SHARE REALTIME SCREENER</p>
-          <h1>A股实时条件选股器</h1>
-          <p className="sub">实时行情、主力资金流与最新财报增长条件联合筛选</p>
+          <p className="eyebrow">A-SHARE ON-DEMAND SCREENER</p>
+          <h1>A股条件选股器</h1>
+          <p className="sub">需要时手动查询当前行情、主力资金流与最新财报增长条件</p>
         </div>
-        <button onClick={() => refresh(form)} disabled={loading}>{loading ? '刷新中…' : '立即刷新'}</button>
+        <button onClick={() => refresh(form)} disabled={loading}>{loading ? '查询中…' : '立即查询'}</button>
       </header>
 
       {form && (
@@ -105,7 +99,7 @@ export default function App() {
           <label>主力净流入（亿元）<input type="number" step="0.1" value={form.net_inflow_min_cny / 100000000} onChange={(e) => setRule('net_inflow_min_cny', Number(e.target.value) * 100000000)} /></label>
           <label>净利润同比（%）<input type="number" value={form.net_profit_yoy_min} onChange={(e) => setRule('net_profit_yoy_min', e.target.value)} /></label>
           <label>营收同比（%）<input type="number" value={form.revenue_yoy_min} onChange={(e) => setRule('revenue_yoy_min', e.target.value)} /></label>
-          <button onClick={() => refresh(form)} disabled={loading}>应用条件</button>
+          <button onClick={() => refresh(form)} disabled={loading}>按当前条件查询</button>
         </section>
       )}
 
@@ -115,7 +109,7 @@ export default function App() {
 
       <section className="summary">
         <div><span>符合股票</span><strong>{stocks.length}</strong></div>
-        <div><span>最后实时刷新</span><strong>{updatedAt ? updatedAt.toLocaleTimeString() : '-'}</strong></div>
+        <div><span>最后查询时间</span><strong>{updatedAt ? updatedAt.toLocaleTimeString() : '尚未查询'}</strong></div>
       </section>
 
       {error && <div className="error">{error}</div>}
@@ -124,7 +118,8 @@ export default function App() {
         <table>
           <thead><tr><th>代码</th><th>名称</th><th>现价</th><th>涨跌幅</th><th>换手率</th><th>主力净流入</th><th>净利润同比</th><th>营收同比</th></tr></thead>
           <tbody>
-            {!loading && stocks.length === 0 && !error && <tr><td colSpan="8" className="empty">当前没有同时满足全部条件的股票</td></tr>}
+            {!loading && updatedAt && stocks.length === 0 && !error && <tr><td colSpan="8" className="empty">当前没有同时满足全部条件的股票</td></tr>}
+            {!loading && !updatedAt && !error && <tr><td colSpan="8" className="empty">点击“立即查询”获取当前符合条件的股票</td></tr>}
             {stocks.map((s) => (
               <tr key={s.code}>
                 <td className="code">{s.code}</td><td>{s.name}</td><td>{s.price ?? '-'}</td>
