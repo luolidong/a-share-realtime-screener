@@ -13,17 +13,10 @@ function pct(value) {
   return `${Number(value).toFixed(2)}%`
 }
 
-function localTime(value) {
-  if (!value) return '-'
-  return new Date(value).toLocaleString()
-}
-
 export default function App() {
   const [stocks, setStocks] = useState([])
   const [rules, setRules] = useState(null)
   const [form, setForm] = useState(null)
-  const [scanner, setScanner] = useState(null)
-  const [events, setEvents] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [updatedAt, setUpdatedAt] = useState(null)
@@ -35,19 +28,6 @@ export default function App() {
     setRules(data)
     setForm(data)
     return data
-  }
-
-  async function loadMonitor() {
-    try {
-      const [statusRes, eventsRes] = await Promise.all([
-        fetch(`${API_BASE}/api/scanner/status`, { cache: 'no-store' }),
-        fetch(`${API_BASE}/api/scanner/events?limit=30`, { cache: 'no-store' }),
-      ])
-      if (statusRes.ok) setScanner(await statusRes.json())
-      if (eventsRes.ok) setEvents(await eventsRes.json())
-    } catch (_) {
-      // 主筛选请求会单独显示错误，监控区短暂失败不打断页面。
-    }
   }
 
   async function refresh(activeRules = form || rules) {
@@ -69,7 +49,6 @@ export default function App() {
       if (!stocksRes.ok) throw new Error((await stocksRes.json()).detail || '获取股票数据失败')
       setStocks(await stocksRes.json())
       setUpdatedAt(new Date())
-      await loadMonitor()
     } catch (e) {
       setError(e.message || String(e))
     } finally {
@@ -110,7 +89,7 @@ export default function App() {
         <div>
           <p className="eyebrow">A-SHARE REALTIME SCREENER</p>
           <h1>A股实时条件选股器</h1>
-          <p className="sub">盘中行情 + 主力资金流 + 最新财报增长条件联合筛选</p>
+          <p className="sub">实时行情、主力资金流与最新财报增长条件联合筛选</p>
         </div>
         <button onClick={() => refresh(form)} disabled={loading}>{loading ? '刷新中…' : '立即刷新'}</button>
       </header>
@@ -132,7 +111,6 @@ export default function App() {
 
       <section className="summary">
         <div><span>符合股票</span><strong>{stocks.length}</strong></div>
-        <div><span>后台扫描</span><strong>{scanner?.market_open ? '交易中 · 15秒' : '休市待机'}</strong></div>
         <div><span>最后实时刷新</span><strong>{updatedAt ? updatedAt.toLocaleTimeString() : '-'}</strong></div>
       </section>
 
@@ -152,28 +130,6 @@ export default function App() {
             ))}
           </tbody>
         </table>
-      </section>
-
-      <section className="eventsSection">
-        <div className="sectionTitle">
-          <div><p className="eyebrow">BACKGROUND SCANNER</p><h2>最近进入 / 离开记录</h2></div>
-          <span>{scanner?.last_scan ? `最近扫描：${localTime(scanner.last_scan.scanned_at)}` : '等待交易时段扫描'}</span>
-        </div>
-        <div className="tableWrap">
-          <table>
-            <thead><tr><th>时间</th><th>动作</th><th>代码</th><th>名称</th><th>换手率</th><th>主力净流入</th><th>当时涨跌幅</th></tr></thead>
-            <tbody>
-              {events.length === 0 && <tr><td colSpan="7" className="empty">暂无进入/离开记录</td></tr>}
-              {events.map((e) => (
-                <tr key={e.id}>
-                  <td>{localTime(e.event_at)}</td>
-                  <td><span className={e.event_type === 'ENTER' ? 'eventEnter' : 'eventExit'}>{e.event_type === 'ENTER' ? '进入' : '离开'}</span></td>
-                  <td className="code">{e.code}</td><td>{e.name}</td><td>{pct(e.turnover_rate)}</td><td>{money(e.net_inflow_cny)}</td><td>{pct(e.pct_change)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
       </section>
     </main>
   )
