@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import random
 import time
 from datetime import date, datetime, timedelta
 from threading import Lock
@@ -8,25 +9,26 @@ from zoneinfo import ZoneInfo
 
 import akshare as ak
 import pandas as pd
-import requests
+from curl_cffi import requests as curl_requests
 
 from .base import StockDataProvider
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
-# The generic push2.eastmoney.com endpoint can close connections without a
-# response on some networks. Prefer the numbered node that has been verified
-# to work from the deployed Docker container.
+# Eastmoney may reject/close plain requests on some networks. Prefer the
+# webguest routes used by newer community clients, use browser-like TLS via
+# curl_cffi, and keep several nodes as failover.
 EASTMONEY_CLIST_URLS = (
+    "https://82.push2.eastmoney.com/webguest/api/qt/clist/get",
+    "https://73.push2.eastmoney.com/webguest/api/qt/clist/get",
+    "https://push2.eastmoney.com/webguest/api/qt/clist/get",
     "https://82.push2.eastmoney.com/api/qt/clist/get",
-    "https://push2.eastmoney.com/api/qt/clist/get",
 )
 EASTMONEY_TIMEOUT_SECONDS = 15
-EASTMONEY_RETRIES_PER_NODE = 3
-# A-share universe is currently a little over 5,000 securities. Using a large
-# page size avoids dozens of rapid requests, which can trigger Eastmoney to
-# close the connection mid-pagination.
-EASTMONEY_PAGE_SIZE = 5000
+EASTMONEY_RETRIES_PER_NODE = 2
+EASTMONEY_PAGE_SIZE = 100
+EASTMONEY_MIN_TURNOVER = 10.0
+REALTIME_SNAPSHOT_TTL = timedelta(seconds=15)
 
 
 def latest_reporting_period(today: date | None = None) -> str:
@@ -49,57 +51,102 @@ def _normalize_codes(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _request_eastmoney_page(
-    session: requests.Session,
+    session: curl_requests.Session,
     params: dict[str, str | int],
-) -> dict:
-    """Fetch one Eastmoney clist page with node failover and retries."""
-    last_error: Exception | None = None
+    preferred_url: str | None = None,
+) -> tuple[dict, str]:
+    """Fetch one Eastmoney page and return both payload and working URL."""
+    urls = list(EASTMONEY_CLIST_URLS)
+    if preferred_url in urls:
+        urls.remove(preferred_url)
+        urls.insert(0, preferred_url)
 
-    for url in EASTMONEY_CLIST_URLS:
+    last_error: Exception | None = None
+    for url in urls:
         for attempt in range(EASTMONEY_RETRIES_PER_NODE):
             try:
-                # Deliberately do not add custom headers here: the same plain
-                # requests.get call has been verified against the numbered node.
                 response = session.get(
                     url,
                     params=params,
                     timeout=EASTMONEY_TIMEOUT_SECONDS,
+                    impersonate="chrome",
+                    headers={
+                        "Accept": "application/json,text/plain,*/*",
+                        "Referer": "https://quote.eastmoney.com/",
+                    },
                 )
                 response.raise_for_status()
                 payload = response.json()
                 if payload.get("data") is None:
                     raise RuntimeError(f"Eastmoney returned no data: rc={payload.get('rc')}")
-                return payload
-            except (requests.RequestException, ValueError, RuntimeError) as exc:
+                return payload, url
+            except Exception as exc:  # curl_cffi and JSON errors have different types
                 last_error = exc
                 if attempt + 1 < EASTMONEY_RETRIES_PER_NODE:
-                    time.sleep(0.8 * (attempt + 1))
+                    time.sleep(0.6 * (attempt + 1))
 
     raise RuntimeError(f"Eastmoney realtime API unavailable: {last_error}") from last_error
 
 
-def _fetch_eastmoney_clist(params: dict[str, str | int]) -> pd.DataFrame:
-    """Fetch the Eastmoney realtime stock list with minimal request count."""
-    request_params = dict(params)
-    request_params["pn"] = "1"
-    request_params["pz"] = str(EASTMONEY_PAGE_SIZE)
+def _fetch_realtime_snapshot() -> pd.DataFrame:
+    """Fetch only stocks that can satisfy the turnover rule, sorted by turnover.
+
+    The screener requires turnover >= 10%, so the request sorts the whole market
+    by turnover descending and stops as soon as a page crosses below 10%. This
+    avoids pulling all ~5,500 stocks and sharply reduces public-API requests.
+    """
+    params: dict[str, str | int] = {
+        "pn": "1",
+        "pz": str(EASTMONEY_PAGE_SIZE),
+        "po": "1",
+        "np": "1",
+        "fltt": "2",
+        "invt": "2",
+        "fid": "f8",
+        "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+        "fs": "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23,m:0 t:81 s:2048",
+        "fields": "f12,f14,f2,f3,f8,f62",
+    }
 
     rows: list[dict] = []
-    with requests.Session() as session:
-        payload = _request_eastmoney_page(session, request_params)
-        data = payload["data"]
-        rows.extend(data.get("diff") or [])
+    preferred_url: str | None = None
+    with curl_requests.Session() as session:
+        for page in range(1, 100):
+            params["pn"] = str(page)
+            payload, preferred_url = _request_eastmoney_page(
+                session,
+                params,
+                preferred_url=preferred_url,
+            )
+            page_rows = payload["data"].get("diff") or []
+            if not page_rows:
+                break
 
-        total = int(data.get("total") or len(rows))
-        total_pages = max(1, math.ceil(total / EASTMONEY_PAGE_SIZE))
-        for page in range(2, total_pages + 1):
-            # Avoid a burst of back-to-back requests to the public endpoint.
-            time.sleep(0.35)
-            request_params["pn"] = str(page)
-            page_payload = _request_eastmoney_page(session, request_params)
-            rows.extend(page_payload["data"].get("diff") or [])
+            rows.extend(page_rows)
+            turnover = pd.to_numeric(
+                pd.Series([row.get("f8") for row in page_rows]),
+                errors="coerce",
+            ).dropna()
 
-    return pd.DataFrame(rows)
+            # Results are sorted by f8 descending. Once the current page reaches
+            # below 10%, no later page can satisfy the screener's turnover rule.
+            if turnover.empty or turnover.min() < EASTMONEY_MIN_TURNOVER:
+                break
+
+            total = int(payload["data"].get("total") or 0)
+            if total and page * EASTMONEY_PAGE_SIZE >= total:
+                break
+
+            time.sleep(random.uniform(0.35, 0.7))
+
+    if not rows:
+        raise RuntimeError("Eastmoney realtime API returned no rows")
+
+    frame = pd.DataFrame(rows)
+    for column in ("f2", "f3", "f8", "f62"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    frame = frame[frame["f8"] >= EASTMONEY_MIN_TURNOVER].copy()
+    return frame.reset_index(drop=True)
 
 
 class AkShareProvider(StockDataProvider):
@@ -109,40 +156,37 @@ class AkShareProvider(StockDataProvider):
     _financial_cache_lock = Lock()
     financial_cache_ttl = timedelta(hours=6)
 
+    _realtime_cache: pd.DataFrame | None = None
+    _realtime_cache_at: datetime | None = None
+    _realtime_cache_lock = Lock()
+
+    def _get_realtime_snapshot(self) -> pd.DataFrame:
+        cls = type(self)
+        now = datetime.now()
+        with cls._realtime_cache_lock:
+            cache_valid = (
+                cls._realtime_cache is not None
+                and cls._realtime_cache_at is not None
+                and now - cls._realtime_cache_at < REALTIME_SNAPSHOT_TTL
+            )
+            if cache_valid:
+                return cls._realtime_cache.copy()
+
+            snapshot = _fetch_realtime_snapshot()
+            cls._realtime_cache = snapshot.copy()
+            cls._realtime_cache_at = now
+            return snapshot
+
     def get_realtime_quotes(self) -> pd.DataFrame:
-        df = _fetch_eastmoney_clist(
-            {
-                "po": "1",
-                "np": "1",
-                "fltt": "2",
-                "invt": "2",
-                "fid": "f12",
-                "ut": "bd1d9ddb04089700cf9c27f6f7426281",
-                "fs": "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23,m:0 t:81 s:2048",
-                "fields": "f12,f14,f2,f3,f8",
-            }
-        )
+        df = self._get_realtime_snapshot()
         out = df[["f12", "f14", "f2", "f3", "f8"]].copy()
         out.columns = ["code", "name", "price", "pct_change", "turnover_rate"]
         return _normalize_codes(out)
 
     def get_realtime_money_flow(self) -> pd.DataFrame:
-        # f62 is today's main-fund net inflow amount, in CNY.
-        df = _fetch_eastmoney_clist(
-            {
-                "fid": "f62",
-                "po": "1",
-                "np": "1",
-                "fltt": "2",
-                "invt": "2",
-                "ut": "b2884a393a59ad64002292a3e90d46a5",
-                "fs": (
-                    "m:0+t:6+f:!2,m:0+t:13+f:!2,m:0+t:80+f:!2,"
-                    "m:1+t:2+f:!2,m:1+t:23+f:!2,m:0+t:7+f:!2,m:1+t:3+f:!2"
-                ),
-                "fields": "f12,f62",
-            }
-        )
+        # f62 is today's main-fund net inflow amount, in CNY. Reuse the same
+        # realtime snapshot instead of downloading the market a second time.
+        df = self._get_realtime_snapshot()
         out = df[["f12", "f62"]].copy()
         out.columns = ["code", "net_inflow_cny"]
         return _normalize_codes(out)
