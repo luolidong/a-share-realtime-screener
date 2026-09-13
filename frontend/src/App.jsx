@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8000'
 const REALTIME_REFRESH_MS = 15000
@@ -20,6 +20,7 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [updatedAt, setUpdatedAt] = useState(null)
+  const refreshingRef = useRef(false)
 
   async function loadDefaults() {
     const rulesRes = await fetch(`${API_BASE}/api/rules`, { cache: 'no-store' })
@@ -31,6 +32,8 @@ export default function App() {
   }
 
   async function refresh(activeRules = form || rules) {
+    if (refreshingRef.current) return
+    refreshingRef.current = true
     setLoading(true)
     setError('')
     try {
@@ -52,6 +55,7 @@ export default function App() {
     } catch (e) {
       setError(e.message || String(e))
     } finally {
+      refreshingRef.current = false
       setLoading(false)
     }
   }
