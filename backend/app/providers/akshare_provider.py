@@ -1,15 +1,37 @@
 from __future__ import annotations
 
+import math
+import time
 from datetime import date, datetime, timedelta
 from threading import Lock
 from zoneinfo import ZoneInfo
 
 import akshare as ak
 import pandas as pd
+import requests
 
 from .base import StockDataProvider
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+# The generic push2.eastmoney.com endpoint can close connections without a
+# response on some networks. The numbered node below is the endpoint currently
+# used by newer AKShare releases and is also more stable in our deployment.
+EASTMONEY_CLIST_URLS = (
+    "https://82.push2.eastmoney.com/api/qt/clist/get",
+    "https://push2.eastmoney.com/api/qt/clist/get",
+)
+EASTMONEY_TIMEOUT_SECONDS = 15
+EASTMONEY_RETRIES_PER_NODE = 2
+EASTMONEY_PAGE_SIZE = 100
+EASTMONEY_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json,text/plain,*/*",
+}
 
 
 def latest_reporting_period(today: date | None = None) -> str:
@@ -31,6 +53,57 @@ def _normalize_codes(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.drop_duplicates(subset=["code"], keep="last").reset_index(drop=True)
 
 
+def _request_eastmoney_page(
+    session: requests.Session,
+    params: dict[str, str | int],
+) -> dict:
+    """Fetch one Eastmoney clist page with node failover and short retries."""
+    last_error: Exception | None = None
+
+    for url in EASTMONEY_CLIST_URLS:
+        for attempt in range(EASTMONEY_RETRIES_PER_NODE):
+            try:
+                response = session.get(
+                    url,
+                    params=params,
+                    headers=EASTMONEY_HEADERS,
+                    timeout=EASTMONEY_TIMEOUT_SECONDS,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if payload.get("data") is None:
+                    raise RuntimeError(f"Eastmoney returned no data: rc={payload.get('rc')}")
+                return payload
+            except (requests.RequestException, ValueError, RuntimeError) as exc:
+                last_error = exc
+                if attempt + 1 < EASTMONEY_RETRIES_PER_NODE:
+                    time.sleep(0.4 * (attempt + 1))
+
+    raise RuntimeError(f"Eastmoney realtime API unavailable: {last_error}") from last_error
+
+
+def _fetch_eastmoney_clist(params: dict[str, str | int]) -> pd.DataFrame:
+    """Fetch every page from Eastmoney's realtime stock list API."""
+    request_params = dict(params)
+    request_params["pn"] = "1"
+    request_params["pz"] = str(EASTMONEY_PAGE_SIZE)
+
+    rows: list[dict] = []
+    with requests.Session() as session:
+        payload = _request_eastmoney_page(session, request_params)
+        data = payload["data"]
+        rows.extend(data.get("diff") or [])
+
+        total = int(data.get("total") or len(rows))
+        total_pages = max(1, math.ceil(total / EASTMONEY_PAGE_SIZE))
+        for page in range(2, total_pages + 1):
+            request_params["pn"] = str(page)
+            page_payload = _request_eastmoney_page(session, request_params)
+            rows.extend(page_payload["data"].get("diff") or [])
+
+    return pd.DataFrame(rows)
+
+
 class AkShareProvider(StockDataProvider):
     _financial_cache: pd.DataFrame | None = None
     _financial_cache_period: str | None = None
@@ -39,14 +112,42 @@ class AkShareProvider(StockDataProvider):
     financial_cache_ttl = timedelta(hours=6)
 
     def get_realtime_quotes(self) -> pd.DataFrame:
-        df = ak.stock_zh_a_spot_em()
-        out = df[["代码", "名称", "最新价", "涨跌幅", "换手率"]].copy()
+        # Fetch directly instead of calling stock_zh_a_spot_em so an older
+        # installed AKShare version cannot force the unstable generic node.
+        df = _fetch_eastmoney_clist(
+            {
+                "po": "1",
+                "np": "1",
+                "fltt": "2",
+                "invt": "2",
+                "fid": "f12",
+                "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+                "fs": "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23,m:0 t:81 s:2048",
+                "fields": "f12,f14,f2,f3,f8",
+            }
+        )
+        out = df[["f12", "f14", "f2", "f3", "f8"]].copy()
         out.columns = ["code", "name", "price", "pct_change", "turnover_rate"]
         return _normalize_codes(out)
 
     def get_realtime_money_flow(self) -> pd.DataFrame:
-        df = ak.stock_individual_fund_flow_rank(indicator="今日")
-        out = df[["代码", "今日主力净流入-净额"]].copy()
+        # f62 is today's main-fund net inflow amount, in CNY.
+        df = _fetch_eastmoney_clist(
+            {
+                "fid": "f62",
+                "po": "1",
+                "np": "1",
+                "fltt": "2",
+                "invt": "2",
+                "ut": "b2884a393a59ad64002292a3e90d46a5",
+                "fs": (
+                    "m:0+t:6+f:!2,m:0+t:13+f:!2,m:0+t:80+f:!2,"
+                    "m:1+t:2+f:!2,m:1+t:23+f:!2,m:0+t:7+f:!2,m:1+t:3+f:!2"
+                ),
+                "fields": "f12,f62",
+            }
+        )
+        out = df[["f12", "f62"]].copy()
         out.columns = ["code", "net_inflow_cny"]
         return _normalize_codes(out)
 
