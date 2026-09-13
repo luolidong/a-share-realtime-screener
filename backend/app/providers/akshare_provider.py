@@ -15,23 +15,18 @@ from .base import StockDataProvider
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 # The generic push2.eastmoney.com endpoint can close connections without a
-# response on some networks. The numbered node below is the endpoint currently
-# used by newer AKShare releases and is also more stable in our deployment.
+# response on some networks. Prefer the numbered node that has been verified
+# to work from the deployed Docker container.
 EASTMONEY_CLIST_URLS = (
     "https://82.push2.eastmoney.com/api/qt/clist/get",
     "https://push2.eastmoney.com/api/qt/clist/get",
 )
 EASTMONEY_TIMEOUT_SECONDS = 15
-EASTMONEY_RETRIES_PER_NODE = 2
-EASTMONEY_PAGE_SIZE = 100
-EASTMONEY_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json,text/plain,*/*",
-}
+EASTMONEY_RETRIES_PER_NODE = 3
+# A-share universe is currently a little over 5,000 securities. Using a large
+# page size avoids dozens of rapid requests, which can trigger Eastmoney to
+# close the connection mid-pagination.
+EASTMONEY_PAGE_SIZE = 5000
 
 
 def latest_reporting_period(today: date | None = None) -> str:
@@ -57,16 +52,17 @@ def _request_eastmoney_page(
     session: requests.Session,
     params: dict[str, str | int],
 ) -> dict:
-    """Fetch one Eastmoney clist page with node failover and short retries."""
+    """Fetch one Eastmoney clist page with node failover and retries."""
     last_error: Exception | None = None
 
     for url in EASTMONEY_CLIST_URLS:
         for attempt in range(EASTMONEY_RETRIES_PER_NODE):
             try:
+                # Deliberately do not add custom headers here: the same plain
+                # requests.get call has been verified against the numbered node.
                 response = session.get(
                     url,
                     params=params,
-                    headers=EASTMONEY_HEADERS,
                     timeout=EASTMONEY_TIMEOUT_SECONDS,
                 )
                 response.raise_for_status()
@@ -77,13 +73,13 @@ def _request_eastmoney_page(
             except (requests.RequestException, ValueError, RuntimeError) as exc:
                 last_error = exc
                 if attempt + 1 < EASTMONEY_RETRIES_PER_NODE:
-                    time.sleep(0.4 * (attempt + 1))
+                    time.sleep(0.8 * (attempt + 1))
 
     raise RuntimeError(f"Eastmoney realtime API unavailable: {last_error}") from last_error
 
 
 def _fetch_eastmoney_clist(params: dict[str, str | int]) -> pd.DataFrame:
-    """Fetch every page from Eastmoney's realtime stock list API."""
+    """Fetch the Eastmoney realtime stock list with minimal request count."""
     request_params = dict(params)
     request_params["pn"] = "1"
     request_params["pz"] = str(EASTMONEY_PAGE_SIZE)
@@ -97,6 +93,8 @@ def _fetch_eastmoney_clist(params: dict[str, str | int]) -> pd.DataFrame:
         total = int(data.get("total") or len(rows))
         total_pages = max(1, math.ceil(total / EASTMONEY_PAGE_SIZE))
         for page in range(2, total_pages + 1):
+            # Avoid a burst of back-to-back requests to the public endpoint.
+            time.sleep(0.35)
             request_params["pn"] = str(page)
             page_payload = _request_eastmoney_page(session, request_params)
             rows.extend(page_payload["data"].get("diff") or [])
@@ -112,8 +110,6 @@ class AkShareProvider(StockDataProvider):
     financial_cache_ttl = timedelta(hours=6)
 
     def get_realtime_quotes(self) -> pd.DataFrame:
-        # Fetch directly instead of calling stock_zh_a_spot_em so an older
-        # installed AKShare version cannot force the unstable generic node.
         df = _fetch_eastmoney_clist(
             {
                 "po": "1",
