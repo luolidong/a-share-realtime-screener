@@ -4,7 +4,3 @@ rules:
   net_inflow_min_cny: 100000000
   net_profit_yoy_min: 30
   revenue_yoy_min: 30
-
-app:
-  refresh_seconds: 60
-  max_rows: 100

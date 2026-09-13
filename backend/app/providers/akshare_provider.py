@@ -2,21 +2,33 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from threading import Lock
+from zoneinfo import ZoneInfo
 
 import akshare as ak
 import pandas as pd
 
 from .base import StockDataProvider
 
+SHANGHAI = ZoneInfo("Asia/Shanghai")
+
 
 def latest_reporting_period(today: date | None = None) -> str:
-    today = today or date.today()
-    y = today.year
+    """Return the newest quarterly period whose disclosure deadline has passed."""
+    today = today or datetime.now(SHANGHAI).date()
+    year = today.year
+    if today.month >= 11:
+        return f"{year}0930"
     if today.month >= 9:
-        return f"{y}0630"
+        return f"{year}0630"
     if today.month >= 5:
-        return f"{y}0331"
-    return f"{y - 1}1231"
+        return f"{year}0331"
+    return f"{year - 1}0930"
+
+
+def _normalize_codes(frame: pd.DataFrame) -> pd.DataFrame:
+    frame = frame.copy()
+    frame["code"] = frame["code"].astype(str).str.strip().str.zfill(6)
+    return frame.drop_duplicates(subset=["code"], keep="last").reset_index(drop=True)
 
 
 class AkShareProvider(StockDataProvider):
@@ -30,15 +42,13 @@ class AkShareProvider(StockDataProvider):
         df = ak.stock_zh_a_spot_em()
         out = df[["代码", "名称", "最新价", "涨跌幅", "换手率"]].copy()
         out.columns = ["code", "name", "price", "pct_change", "turnover_rate"]
-        out["code"] = out["code"].astype(str).str.zfill(6)
-        return out
+        return _normalize_codes(out)
 
     def get_realtime_money_flow(self) -> pd.DataFrame:
         df = ak.stock_individual_fund_flow_rank(indicator="今日")
         out = df[["代码", "今日主力净流入-净额"]].copy()
         out.columns = ["code", "net_inflow_cny"]
-        out["code"] = out["code"].astype(str).str.zfill(6)
-        return out
+        return _normalize_codes(out)
 
     def get_financial_growth(self) -> pd.DataFrame:
         period = latest_reporting_period()
@@ -57,7 +67,7 @@ class AkShareProvider(StockDataProvider):
             df = ak.stock_yjbb_em(date=period)
             out = df[["股票代码", "净利润-同比增长", "营业总收入-同比增长"]].copy()
             out.columns = ["code", "net_profit_yoy", "revenue_yoy"]
-            out["code"] = out["code"].astype(str).str.zfill(6)
+            out = _normalize_codes(out)
             cls._financial_cache = out.copy()
             cls._financial_cache_period = period
             cls._financial_cache_at = now
