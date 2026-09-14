@@ -25,6 +25,7 @@
 - 显示符合条件的股票及关键指标
 - 没有符合条件的股票时正常显示 0 个结果
 - Docker 一键部署
+- macOS / Linux / Windows 启动和关闭脚本
 
 ## 使用方式
 
@@ -70,6 +71,55 @@ docker compose up --build -d
 http://127.0.0.1:8080
 ```
 
+## 启动和关闭
+
+首次部署完成后，日常使用不需要每次重新输入完整 Docker 命令。
+
+### macOS / Linux
+
+启动：
+
+```bash
+bash start.sh
+```
+
+关闭：
+
+```bash
+bash stop.sh
+```
+
+如果希望直接使用 `./start.sh` 和 `./stop.sh`，首次执行：
+
+```bash
+chmod +x start.sh stop.sh
+```
+
+之后可以：
+
+```bash
+./start.sh
+./stop.sh
+```
+
+### Windows
+
+在项目目录直接双击：
+
+```text
+start.bat   启动系统
+stop.bat    关闭系统
+```
+
+也可以在 PowerShell / CMD 中运行：
+
+```powershell
+.\start.bat
+.\stop.bat
+```
+
+启动脚本会启动 Docker 容器并显示运行状态。启动成功后访问 `http://127.0.0.1:8080`。
+
 ## 检查运行状态
 
 ```bash
@@ -102,20 +152,6 @@ curl http://127.0.0.1:8080/api/stocks
 ```bash
 git pull
 docker compose up --build -d
-```
-
-## 停止和启动
-
-停止：
-
-```bash
-docker compose down
-```
-
-重新启动：
-
-```bash
-docker compose up -d
 ```
 
 ## 默认条件配置
