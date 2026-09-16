@@ -12,6 +12,19 @@ function pct(value) {
   return `${Number(value).toFixed(2)}%`
 }
 
+function dateTime(value) {
+  if (!value) return '尚未查询'
+  return value.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+}
+
 export default function App() {
   const [stocks, setStocks] = useState([])
   const [rules, setRules] = useState(null)
@@ -109,7 +122,7 @@ export default function App() {
 
       <section className="summary">
         <div><span>符合股票</span><strong>{stocks.length}</strong></div>
-        <div><span>最后查询时间</span><strong>{updatedAt ? updatedAt.toLocaleTimeString() : '尚未查询'}</strong></div>
+        <div><span>最后查询时间</span><strong>{dateTime(updatedAt)}</strong></div>
       </section>
 
       {error && <div className="error">{error}</div>}
